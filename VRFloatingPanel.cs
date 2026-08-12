@@ -61,7 +61,7 @@ namespace KKPEHeightLock
         private static Transform _panelTf;
         private static Font _font;
         private static RectTransform _titleBarRect;
-        private static LineRenderer _laser;
+        private static LineRenderer _laser;      // 右手激光
         private static RectTransform _uiCursor;   // 菜单内光标(uGUI,命中面板时显示)
 
         // 页面容器
@@ -446,7 +446,7 @@ namespace KKPEHeightLock
                 _panelTf = CreateRect("Panel", _root.transform, 0f, 0f, PanelW, PanelH);
                 _panelTf.gameObject.AddComponent<Image>().color = BgColor;
 
-                // 激光(恢复原配置)
+                // 激光(原配置)
                 try
                 {
                     var laserGo = new GameObject("Laser");
