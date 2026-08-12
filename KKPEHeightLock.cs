@@ -134,7 +134,6 @@ namespace KKPEHeightLock
 
             var harmony = new Harmony(GUID);
             harmony.PatchAll(typeof(KKPEHeightLockPlugin).Assembly);
-            PatchErminThumbstickIsolation(harmony);
 
             // 渲染前最后一刻(SteamVR 追踪/各插件移动都执行完后)钉住第一人称 rig,
             // 否则头显/原点会被 SteamVR 的 pose 更新覆盖,俯仰转头时头显位置飘
@@ -145,57 +144,6 @@ namespace KKPEHeightLock
             catch (Exception) { }
 
             Logger.LogInfo($"{PluginName} v{Version} loaded, bone: {BoneName.Value}, mode: {LockMode.Value}, enabled: {Enabled.Value}");
-        }
-
-        /// <summary>
-        /// POV 激活时隔离 Ermin 的摇杆移动/转向(它的右摇杆上下被识别为 Y 轴高度移动,
-        /// 与第一人称的俯仰转头冲突,导致头显绕圈/飞裤裆)。POV 关闭时恢复 Ermin 行为。
-        /// 手动 patch(类型 internal,不能用特性 PatchAll,失败也不影响其他 patch)。
-        /// </summary>
-        private static void PatchErminThumbstickIsolation(Harmony harmony)
-        {
-            try
-            {
-                var erType = AccessTools.TypeByName("KKCharaStudioVR.GripMoveKKCharaStudioTool");
-                if (erType == null)
-                {
-                    // Ermin 的 DLL 在 BepInEx 根目录,可能未被自动加载:手动加载后再查
-                    try
-                    {
-                        var asm = System.Reflection.Assembly.LoadFrom(
-                            System.IO.Path.Combine(BepInEx.Paths.BepInExRootPath, "KKCharaStudioVRPlugin.dll"));
-                        erType = asm.GetType("KKCharaStudioVR.GripMoveKKCharaStudioTool");
-                    }
-                    catch (Exception e)
-                    {
-                        Log.LogWarning("POVIsolate: load Ermin dll failed " + e.Message);
-                    }
-                }
-                if (erType == null)
-                {
-                    Log.LogWarning("POVIsolate: Ermin tool type not found, skip");
-                    return;
-                }
-                var m = AccessTools.Method(erType, "HandleThumbstickLocomotion");
-                if (m == null)
-                {
-                    Log.LogWarning("POVIsolate: HandleThumbstickLocomotion not found, skip");
-                    return;
-                }
-                harmony.Patch(m, prefix: new HarmonyMethod(typeof(KKPEHeightLockPlugin).GetMethod(
-                    "ErminThumbstickPrefix", BindingFlags.NonPublic | BindingFlags.Static)));
-                Log.LogInfo("POVIsolate: Ermin thumbstick locomotion isolated (POV 时禁用)");
-            }
-            catch (Exception e)
-            {
-                Log.LogWarning("POVIsolate: patch failed " + e.Message);
-            }
-        }
-
-        /// <summary>POV 激活时跳过 Ermin 摇杆移动/转向的 Prefix。</summary>
-        private static bool ErminThumbstickPrefix()
-        {
-            return !POVEnabled.Value;
         }
 
         private void Start()
@@ -262,6 +210,10 @@ namespace KKPEHeightLock
         {
             if (!Enabled.Value) return;
             if (args.Operation != SceneOperationKind.Load) return;
+
+            // 换场景后强制复位第一人称:关闭 POV、恢复 rig 与隐藏的头部,
+            // 避免加载场景时 POV 状态残留把镜头锁住(无法移动/转向)
+            VRFirstPersonPOV.ResetAfterSceneLoad();
 
             // 场景工具:去无用球体 / 去码(独立开关,与角色替换互不影响)
             if (AutoRemoveSpheres.Value)
@@ -1149,6 +1101,8 @@ namespace KKPEHeightLock
                 ScenePlayerModule.LoadPrevScene();
             if (GUILayout.Button("刷新", GUILayout.Width(52), GUILayout.Height(32)))
                 ScenePlayerModule.RefreshSceneList();
+            if (GUILayout.Button("随机", GUILayout.Width(52), GUILayout.Height(32)))
+                ScenePlayerModule.RandomScene();
             GUILayout.Label(ScenePlayerModule.SceneLabel(), GUI.skin.textField, GUILayout.ExpandWidth(true), GUILayout.MaxWidth(280), GUILayout.Height(32));
             if (GUILayout.Button("▶", GUILayout.Width(36), GUILayout.Height(32)))
                 ScenePlayerModule.LoadNextScene();
@@ -2393,6 +2347,21 @@ namespace KKPEHeightLock
             }
         }
 
+        /// <summary>换场景后强制复位第一人称(关闭 POV、恢复 rig 与被隐藏的头部)。</summary>
+        public static void ResetAfterSceneLoad()
+        {
+            try
+            {
+                KKPEHeightLockPlugin.POVEnabled.Value = false;
+                _wasEnabled = false;
+                _lastWasVR = false;
+                _charaId = -1;
+                RestoreHiddenHead();
+                RestoreRigTransform();
+            }
+            catch (Exception) { }
+        }
+
         /// <summary>LateUpdate 再次应用 rig:SteamVR 在 Update 中按追踪更新头显 pose,
         /// 我们随后在 LateUpdate 重新钉位置+清零头显局部偏移,确保俯仰/偏航转头都不移动摄像机位置。</summary>
         public static void LateUpdatePOV()
@@ -2938,15 +2907,20 @@ namespace KKPEHeightLock
             try
             {
                 if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)) return;
-                // 换场景前自动关闭第一人称,避免视角锁在原地
-                if (KKPEHeightLockPlugin.POVEnabled.Value)
-                {
-                    KKPEHeightLockPlugin.POVEnabled.Value = false;
-                    KKPEHeightLockPlugin.Log.LogMessage("ScenePlayer: POV auto-disabled on scene switch");
-                }
+                KKPEHeightLockPlugin.Log.LogMessage($"ScenePlayer: loading {path}");
+
+                // 用 Studio 原生"加载场景协程"(Studio.Studio.LoadSceneCoroutine,public),
+                // 与 UI 加载走同一条流程,且 JetPack 等插件的 VR 恢复 patch 挂在此协程上,
+                // 加载完成后会自动恢复 VR 相机/手柄(直接用 studio.LoadScene 会跳过,
+                // 导致加载后镜头锁死、Ermin VR 手消失)
                 var studio = Singleton<Studio.Studio>.Instance;
                 if (studio == null) return;
-                KKPEHeightLockPlugin.Log.LogMessage($"ScenePlayer: loading {path}");
+                var coroutine = studio.LoadSceneCoroutine(path);
+                if (coroutine != null)
+                {
+                    KKPEHeightLockPlugin.Instance.StartCoroutine(coroutine);
+                    return;
+                }
                 studio.LoadScene(path);
             }
             catch (Exception e)
@@ -2970,6 +2944,18 @@ namespace KKPEHeightLock
             EnsureScenes();
             if (_sceneFiles.Count == 0) return;
             _sceneIndex = (_sceneIndex + 1) % _sceneFiles.Count;
+            LoadScene(_sceneFiles[_sceneIndex]);
+        }
+
+        /// <summary>随机加载一个场景(排除当前,场景多时避免连续相同)。</summary>
+        public static void RandomScene()
+        {
+            EnsureScenes();
+            if (_sceneFiles.Count == 0) return;
+            int idx = UnityEngine.Random.Range(0, _sceneFiles.Count);
+            if (_sceneFiles.Count > 1 && idx == _sceneIndex)
+                idx = (idx + 1) % _sceneFiles.Count;
+            _sceneIndex = idx;
             LoadScene(_sceneFiles[_sceneIndex]);
         }
 
