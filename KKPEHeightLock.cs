@@ -134,7 +134,68 @@ namespace KKPEHeightLock
 
             var harmony = new Harmony(GUID);
             harmony.PatchAll(typeof(KKPEHeightLockPlugin).Assembly);
+            PatchErminThumbstickIsolation(harmony);
+
+            // 渲染前最后一刻(SteamVR 追踪/各插件移动都执行完后)钉住第一人称 rig,
+            // 否则头显/原点会被 SteamVR 的 pose 更新覆盖,俯仰转头时头显位置飘
+            try
+            {
+                Camera.onPreCull += OnCameraPreCull;
+            }
+            catch (Exception) { }
+
             Logger.LogInfo($"{PluginName} v{Version} loaded, bone: {BoneName.Value}, mode: {LockMode.Value}, enabled: {Enabled.Value}");
+        }
+
+        /// <summary>
+        /// POV 激活时隔离 Ermin 的摇杆移动/转向(它的右摇杆上下被识别为 Y 轴高度移动,
+        /// 与第一人称的俯仰转头冲突,导致头显绕圈/飞裤裆)。POV 关闭时恢复 Ermin 行为。
+        /// 手动 patch(类型 internal,不能用特性 PatchAll,失败也不影响其他 patch)。
+        /// </summary>
+        private static void PatchErminThumbstickIsolation(Harmony harmony)
+        {
+            try
+            {
+                var erType = AccessTools.TypeByName("KKCharaStudioVR.GripMoveKKCharaStudioTool");
+                if (erType == null)
+                {
+                    // Ermin 的 DLL 在 BepInEx 根目录,可能未被自动加载:手动加载后再查
+                    try
+                    {
+                        var asm = System.Reflection.Assembly.LoadFrom(
+                            System.IO.Path.Combine(BepInEx.Paths.BepInExRootPath, "KKCharaStudioVRPlugin.dll"));
+                        erType = asm.GetType("KKCharaStudioVR.GripMoveKKCharaStudioTool");
+                    }
+                    catch (Exception e)
+                    {
+                        Log.LogWarning("POVIsolate: load Ermin dll failed " + e.Message);
+                    }
+                }
+                if (erType == null)
+                {
+                    Log.LogWarning("POVIsolate: Ermin tool type not found, skip");
+                    return;
+                }
+                var m = AccessTools.Method(erType, "HandleThumbstickLocomotion");
+                if (m == null)
+                {
+                    Log.LogWarning("POVIsolate: HandleThumbstickLocomotion not found, skip");
+                    return;
+                }
+                harmony.Patch(m, prefix: new HarmonyMethod(typeof(KKPEHeightLockPlugin).GetMethod(
+                    "ErminThumbstickPrefix", BindingFlags.NonPublic | BindingFlags.Static)));
+                Log.LogInfo("POVIsolate: Ermin thumbstick locomotion isolated (POV 时禁用)");
+            }
+            catch (Exception e)
+            {
+                Log.LogWarning("POVIsolate: patch failed " + e.Message);
+            }
+        }
+
+        /// <summary>POV 激活时跳过 Ermin 摇杆移动/转向的 Prefix。</summary>
+        private static bool ErminThumbstickPrefix()
+        {
+            return !POVEnabled.Value;
         }
 
         private void Start()
@@ -174,6 +235,22 @@ namespace KKPEHeightLock
 
             // 驱动 VR 悬浮菜单(面板跟随 + 右手射线交互;左手 Y 键开合见 VRFirstPersonPOV.CheckLeftYButtonToggle)
             VRFloatingPanel.UpdatePanel();
+        }
+
+        /// <summary>渲染前最后一刻钉住第一人称 rig(此时 SteamVR 追踪与各插件移动都已执行完)。</summary>
+        private static void OnCameraPreCull(Camera cam)
+        {
+            try
+            {
+                VRFirstPersonPOV.LateUpdatePOV();
+            }
+            catch (Exception) { }
+        }
+
+        private void LateUpdate()
+        {
+            // SteamVR 追踪更新头显 pose 后,再次钉住第一人称 rig(俯仰/偏航都不移动摄像机位置)
+            VRFirstPersonPOV.LateUpdatePOV();
         }
 
         private void OnGUI()
@@ -2144,6 +2221,10 @@ namespace KKPEHeightLock
         private static bool _wasEnabled;
         private static ChaControl _lastHiddenChara; // 上一个被隐藏头部的角色(关闭/切换时恢复)
 
+        // LateUpdate 二次应用 rig 用(SteamVR 追踪更新后)
+        private static Vector3 _lastCamPos;
+        private static bool _lastWasVR;
+
         // rig 原始 transform(进入 POV 前保存,关闭时恢复位置/旋转)
         private static Vector3 _savedRigPos;
         private static Quaternion _savedRigRot;
@@ -2246,6 +2327,8 @@ namespace KKPEHeightLock
                     // VR:位置钉眼睛(+高低/视角偏移),摇杆转头 + FOV 由 TryApplyVRRig 处理
                     var fwd = Quaternion.Euler(_lookEuler) * Vector3.forward;
                     camPos += fwd * KKPEHeightLockPlugin.POVViewOffset.Value;
+                    _lastCamPos = camPos;   // 供 LateUpdate 二次应用(SteamVR 追踪更新后)
+                    _lastWasVR = true;
                     TryApplyVRRig(camPos, ref _lookEuler);
                 }
                 else
@@ -2310,9 +2393,25 @@ namespace KKPEHeightLock
             }
         }
 
+        /// <summary>LateUpdate 再次应用 rig:SteamVR 在 Update 中按追踪更新头显 pose,
+        /// 我们随后在 LateUpdate 重新钉位置+清零头显局部偏移,确保俯仰/偏航转头都不移动摄像机位置。</summary>
+        public static void LateUpdatePOV()
+        {
+            try
+            {
+                if (!KKPEHeightLockPlugin.POVEnabled.Value)
+                {
+                    _lastWasVR = false;
+                    return;
+                }
+                if (_lastWasVR)
+                    TryApplyVRRig(_lastCamPos, ref _lookEuler);
+            }
+            catch (Exception) { }
+        }
+
         /// <summary>VR 下把整个 VRCamera rig 移动到眼睛位置。
-        /// 位置钉在眼睛中点;朝向完全由 _lookEuler 控制(绝对设置,不被 SteamVR/Ermin 覆盖),
-        /// 摇杆 x→左右偏航、y→上下俯仰都生效。</summary>
+        /// 位置钉在眼睛中点;朝向由 _lookEuler 控制(绝对设置),摇杆 x→左右偏航、y→上下俯仰。</summary>
         private static bool TryApplyVRRig(Vector3 worldPos, ref Vector3 lookEuler)
         {
             try
@@ -2340,8 +2439,28 @@ namespace KKPEHeightLock
                     }
                 }
 
-                // 绝对设置朝向(不被每帧覆盖)
+                // 绝对设置朝向(可转)
                 origin.rotation = Quaternion.Euler(lookEuler);
+
+                // 关键:补偿头显相对原点的偏移,让头显世界位置恒 = 角色眼睛(worldPos)。
+                // 俯仰/偏航转头时,偏移被旋转放大会导致头显绕圈/飞走,这里每帧平移原点把它钉死。
+                try
+                {
+                    var head = vrcam.Head;
+                    if (head != null)
+                    {
+                        Vector3 local = origin.InverseTransformPoint(head.position); // 头显相对原点的偏移(当前朝向坐标系)
+                        origin.position = worldPos - origin.TransformVector(local);  // 平移原点,使头显世界位置 = worldPos
+                    }
+                    else
+                    {
+                        origin.position = worldPos;
+                    }
+                }
+                catch (Exception)
+                {
+                    origin.position = worldPos;
+                }
 
                 // 应用 FOV 到 VR 相机
                 try
@@ -2555,23 +2674,69 @@ namespace KKPEHeightLock
             }
         }
 
-        /// <summary>检测左手手柄 Y 键按下(Quest 左手 Y = OpenVR 的 k_EButton_ApplicationMenu),呼出/关闭菜单。</summary>
+        /// <summary>检测左手手柄 Y 键按下(Quest 左手 Y = OpenVR 的 k_EButton_ApplicationMenu),呼出/关闭菜单。
+        /// 注意:Quest 右手 B 键在 OpenVR 中也是 ApplicationMenu,必须用左手设备索引限定,避免右手误触。</summary>
+        /// <summary>手柄按键处理:
+        /// - 右手 B 键(ApplicationMenu) = 呼出/关闭悬浮菜单
+        /// - 左手 Y 键(ApplicationMenu) = 第一人称 POV 开关
+        /// (Quest 左右手柄的 Y/B 在 OpenVR 中都是 ApplicationMenu,必须用各自设备索引限定)</summary>
         private static void CheckLeftYButtonToggle()
         {
             try
             {
-                int idx = SteamVR_Controller.GetDeviceIndex(SteamVR_Controller.DeviceRelation.Leftmost, Valve.VR.ETrackedDeviceClass.Controller, 0);
-                if (idx < 0) return;
-                var dev = SteamVR_Controller.Input(idx);
-                if (dev == null || !dev.valid) return;
-                // Quest 左手 Y 键 = ApplicationMenu;Ermin 用 k_EButton_A(左手 X),互不冲突
-                if (dev.GetPressDown(Valve.VR.EVRButtonId.k_EButton_ApplicationMenu))
+                // 右手 B → 菜单
+                int rIdx = -1;
+                try
                 {
-                    // VR 模式切悬浮面板,桌面切 IMGUI 窗口
-                    if (IsVRModeActive())
-                        VRFloatingPanel.Toggle();
-                    else
-                        ConfigPanel.ToggleWristMenu();
+                    var mode = VRGIN.Core.VR.Mode;
+                    if (mode != null && mode.Right != null)
+                    {
+                        var tracked = mode.Right.GetComponent<SteamVR_TrackedObject>();
+                        if (tracked != null) rIdx = (int)tracked.index;
+                    }
+                }
+                catch (Exception) { }
+                if (rIdx < 0)
+                {
+                    rIdx = SteamVR_Controller.GetDeviceIndex(SteamVR_Controller.DeviceRelation.Rightmost, Valve.VR.ETrackedDeviceClass.Controller, 0);
+                }
+                if (rIdx >= 0)
+                {
+                    var rDev = SteamVR_Controller.Input(rIdx);
+                    if (rDev != null && rDev.valid && rDev.GetPressDown(Valve.VR.EVRButtonId.k_EButton_ApplicationMenu))
+                    {
+                        // VR 模式切悬浮面板,桌面切 IMGUI 窗口
+                        if (IsVRModeActive())
+                            VRFloatingPanel.Toggle();
+                        else
+                            ConfigPanel.ToggleWristMenu();
+                    }
+                }
+
+                // 左手 Y → POV 开关
+                int lIdx = -1;
+                try
+                {
+                    var mode = VRGIN.Core.VR.Mode;
+                    if (mode != null && mode.Left != null)
+                    {
+                        var tracked = mode.Left.GetComponent<SteamVR_TrackedObject>();
+                        if (tracked != null) lIdx = (int)tracked.index;
+                    }
+                }
+                catch (Exception) { }
+                if (lIdx < 0)
+                {
+                    lIdx = SteamVR_Controller.GetDeviceIndex(SteamVR_Controller.DeviceRelation.Leftmost, Valve.VR.ETrackedDeviceClass.Controller, 0);
+                }
+                if (lIdx >= 0)
+                {
+                    var lDev = SteamVR_Controller.Input(lIdx);
+                    if (lDev != null && lDev.valid && lDev.GetPressDown(Valve.VR.EVRButtonId.k_EButton_ApplicationMenu))
+                    {
+                        KKPEHeightLockPlugin.POVEnabled.Value = !KKPEHeightLockPlugin.POVEnabled.Value;
+                        KKPEHeightLockPlugin.Log.LogMessage("KKPEHeightLock: first-person POV " + (KKPEHeightLockPlugin.POVEnabled.Value ? "enabled" : "disabled"));
+                    }
                 }
             }
             catch (Exception)
@@ -2637,21 +2802,10 @@ namespace KKPEHeightLock
 
         private static string _sceneSubdir = ""; // 当前场景子目录(相对 SceneDir)
 
-        /// <summary>当前场景目录:跟随当前加载场景所在目录;否则配置 SceneDir + 子目录。</summary>
+        /// <summary>当前场景目录:固定为配置 SceneDir(+子目录),保证 ◀▶ 能在全库场景间推进;
+        /// 不跟随当前加载场景目录(否则子目录场景只有 1 张,无法推进)。</summary>
         private static string CurrentSceneDir()
         {
-            try
-            {
-                // 优先:当前加载场景的目录(同 sceneplayer.py 跟随场景卡目录)
-                if (!string.IsNullOrEmpty(Studio.Studio.savePath))
-                {
-                    string curDir = System.IO.Path.GetDirectoryName(Studio.Studio.savePath);
-                    if (!string.IsNullOrEmpty(curDir) && System.IO.Directory.Exists(curDir))
-                        return curDir;
-                }
-            }
-            catch (Exception) { }
-            // 回退:配置 SceneDir + 子目录
             string baseDir = ResolvePath(KKPEHeightLockPlugin.SceneDir.Value);
             if (string.IsNullOrEmpty(_sceneSubdir)) return baseDir;
             return System.IO.Path.Combine(baseDir, _sceneSubdir);
@@ -2711,16 +2865,17 @@ namespace KKPEHeightLock
             try
             {
                 _sceneFiles.Clear();
-                _sceneIndex = -1;
+                // 保留当前索引(不重置 -1),否则 ◀▶ 每次刷新后都回到头尾两张,无法推进
                 string dir = CurrentSceneDir();
                 if (!System.IO.Directory.Exists(dir)) return;
 
-                foreach (var f in System.IO.Directory.GetFiles(dir, "*.png"))
+                // 递归扫描所有子目录的场景卡(用户场景常分散在分类子目录,只扫根目录会漏)
+                foreach (var f in System.IO.Directory.GetFiles(dir, "*.png", System.IO.SearchOption.AllDirectories))
                     _sceneFiles.Add(f);
                 NaturalSort(_sceneFiles);
                 _scenesLoaded = true;
 
-                // 定位当前加载的场景(用 savePath 文件名,静态字段)
+                // 定位当前加载的场景(用 savePath 文件名);找不到则保留原索引(夹紧到合法范围)
                 if (!string.IsNullOrEmpty(Studio.Studio.savePath))
                 {
                     string cur = System.IO.Path.GetFileNameWithoutExtension(Studio.Studio.savePath);
@@ -2736,6 +2891,8 @@ namespace KKPEHeightLock
                         }
                     }
                 }
+                if (_sceneFiles.Count > 0)
+                    _sceneIndex = Mathf.Clamp(_sceneIndex, 0, _sceneFiles.Count - 1);
                 KKPEHeightLockPlugin.Log.LogMessage($"ScenePlayer: found {_sceneFiles.Count} scenes in {dir}");
             }
             catch (Exception e)
@@ -3295,23 +3452,18 @@ namespace KKPEHeightLock
             catch (Exception) { return "Timeline 未加载"; }
         }
 
-        /// <summary>当前编辑角色:取第一个选中的角色;无则返回 null。</summary>
+        /// <summary>当前编辑角色:实时取当前工作室选中的第一个角色(不缓存,换人立即生效)。</summary>
         public static Studio.OCIChar CurrentEditChar()
         {
             try
             {
-                if (_editChar != null) return _editChar;
-                var selected = KKAPI.Studio.StudioAPI.GetSelectedObjects();
+                var selected = KKAPI.Studio.StudioAPI.GetSelectedCharacters();
                 if (selected != null)
                 {
-                    foreach (var obj in selected)
+                    foreach (var c in selected)
                     {
-                        var c = obj as Studio.OCIChar;
                         if (c != null && c.charInfo != null)
-                        {
-                            _editChar = c;
                             return c;
-                        }
                     }
                 }
             }
