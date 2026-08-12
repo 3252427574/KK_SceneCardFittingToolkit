@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net35</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <AssemblyName>KK_SceneCardFittingToolkit</AssemblyName>
+    <RootNamespace>KKPEHeightLock</RootNamespace>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net35" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>F:\Koikatu\BepInEx\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>F:\Koikatu\BepInEx\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>F:\Koikatu\Koikatu_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>F:\Koikatu\Koikatu_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>F:\Koikatu\Koikatu_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="KKPE">
+      <HintPath>F:\Koikatu\BepInEx\plugins\KKPE.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="KK_MaterialEditor">
+      <HintPath>F:\Koikatu\BepInEx\plugins\KK_Plugins\KK_MaterialEditor.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VRGIN_KKCS">
+      <HintPath>F:\Koikatu\BepInEx\VRGIN_KKCS.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="KKCharaStudioVRPlugin">
+      <HintPath>F:\Koikatu\BepInEx\KKCharaStudioVRPlugin.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Timeline">
+      <HintPath>F:\Koikatu\BepInEx\plugins\Timeline.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="KKAPI">
+      <HintPath>F:\Koikatu\BepInEx\plugins\KKAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
