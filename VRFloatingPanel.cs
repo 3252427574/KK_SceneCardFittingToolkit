@@ -622,7 +622,8 @@ namespace KKPEHeightLock
             _refreshers.Add(() => subdirLabel.text = "场景: " + ScenePlayerModule.SceneSubdirLabel());
             y -= BtnH + RowGap;
             AddButton(p, "删除场景", -335f, y, 110f, BtnH, null, () => ScenePlayerModule.DeleteCurrentScene(true));
-            AddText(p, "上/下一场景并自动加载", 80f, y, 420f, BtnH, SmallFont, TextAnchor.MiddleLeft, DimText);
+            AddButton(p, "随机场景", -140f, y, 130f, BtnH, null, ScenePlayerModule.RandomScene);
+            AddText(p, "◀ ▶ 切换全部场景", 120f, y, 250f, BtnH, SmallFont, TextAnchor.MiddleLeft, DimText);
             y -= BtnH + RowGap;
             AddButton(p, "随机女", -255f, y, 240f, BtnH, null, ScenePlayerModule.RandomReplaceFemale);
             AddButton(p, "随机男", 0f, y, 240f, BtnH, null, ScenePlayerModule.RandomReplaceMale);
